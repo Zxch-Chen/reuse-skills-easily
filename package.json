@@ -1,0 +1,96 @@
+{
+  "name": "keystone",
+  "version": "1.0.0",
+  "description": "A focused macOS-style library for saving and reusing prompts, snippets, design files, and other working artifacts across apps.",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && electron-builder",
+    "build:mac": "vite build && electron-builder --mac --x64 --arm64",
+    "build:dir": "vite build && electron-builder --dir",
+    "preview": "vite preview",
+    "electron:dev": "vite build --watch & electron .",
+    "lint": "echo \"no linter configured\""
+  },
+  "build": {
+    "appId": "com.keystone.app",
+    "productName": "Keystone",
+    "copyright": "Copyright © 2024 Jordan Davis",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      "assets/**/*"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.productivity",
+      "type": "distribution",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSHighResolutionCapable": true
+      },
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "darkModeSupport": true
+    },
+    "dmg": {
+      "title": "Keystone",
+      "icon": "assets/dmg-icon.icns",
+      "background": "assets/dmg-background.png",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 180,
+          "y": 170,
+          "type": "link",
+          "path": "/Applications"
+        },
+        {
+          "x": 360,
+          "y": 170,
+          "type": "file"
+        }
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Zxch-Chen",
+      "repo": "reuse-skills-easily"
+    }
+  },
+  "devDependencies": {
+    "electron": "^29.0.0",
+    "electron-builder": "^24.0.0",
+    "vite": "^5.0.0"
+  },
+  "keywords": [
+    "productivity",
+    "snippets",
+    "prompts",
+    "menu-bar",
+    "macos"
+  ],
+  "author": "Jordan Davis",
+  "license": "MIT"
+}
