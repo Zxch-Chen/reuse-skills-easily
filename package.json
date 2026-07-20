@@ -5,9 +5,9 @@
   "main": "dist/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && electron-builder",
-    "build:mac": "vite build && electron-builder --mac --x64 --arm64",
-    "build:dir": "vite build && electron-builder --dir",
+    "build": "vite build && node scripts/copy-main.js && electron-builder",
+    "build:mac": "vite build && node scripts/copy-main.js && electron-builder --mac --x64 --arm64",
+    "build:dir": "vite build && node scripts/copy-main.js && electron-builder --dir",
     "preview": "vite preview",
     "electron:dev": "vite build --watch & electron .",
     "lint": "echo \"no linter configured\""
