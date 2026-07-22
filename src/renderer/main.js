@@ -7,14 +7,25 @@
 let items = [];
 let selectedId = null;
 let activeFilter = 'All';
-let activeView = 'library';
+let activeView = 'favorites'; // favorites is the default, minimal landing view
+let activeSource = null; // null, or a source id like 'claude-skill'
 let editingId = null;
-let sortOrder = 'recent'; // 'recent', 'alpha', 'type'
+let sortOrder = 'recent'; // 'recent', 'alpha', 'type' - for the Library view
+let favoritesSortOrder = 'custom'; // 'custom', 'recent', 'copied' - for the Favorites view
+let draggedId = null;
 
 // DOM Elements
 const elements = {
+  // Sidebar collapse
+  sidebar: document.getElementById('sidebar'),
+  sidebarToggle: document.getElementById('sidebarToggle'),
+  expandToggle: document.getElementById('expandToggle'),
+  themeToggleBtn: document.getElementById('themeToggleBtn'),
+
   // Views
   libraryView: document.getElementById('libraryView'),
+  libraryHeader: document.getElementById('libraryHeader'),
+  filterPills: document.getElementById('filterPills'),
   detailView: document.getElementById('detailView'),
   detailEmpty: document.getElementById('detailEmpty'),
   detailContent: document.getElementById('detailContent'),
@@ -22,11 +33,15 @@ const elements = {
   // Sidebar
   navItems: document.querySelectorAll('.nav-item[data-view]'),
   filterBtns: document.querySelectorAll('.nav-item[data-filter]'),
+  sourceNavItems: document.querySelectorAll('.nav-item[data-source]'),
   libraryCount: document.getElementById('libraryCount'),
   favoritesCount: document.getElementById('favoritesCount'),
   promptCount: document.getElementById('promptCount'),
   fileCount: document.getElementById('fileCount'),
   snippetCount: document.getElementById('snippetCount'),
+  claudeSourceCount: document.getElementById('claudeSourceCount'),
+  codexSourceCount: document.getElementById('codexSourceCount'),
+  cursorSourceCount: document.getElementById('cursorSourceCount'),
   
   // Search & Filters
   searchInput: document.getElementById('searchInput'),
@@ -58,10 +73,47 @@ const elements = {
   toast: document.getElementById('toast')
 };
 
+// Sidebar collapse (persists across app restarts). Defaults to collapsed so
+// the library list is the main thing you see, until a preference is saved.
+function initSidebarCollapse() {
+  const stored = localStorage.getItem('sidebarCollapsed');
+  const collapsed = stored === null ? true : stored === '1';
+  setSidebarCollapsed(collapsed);
+  elements.sidebarToggle.addEventListener('click', () => {
+    setSidebarCollapsed(!elements.sidebar.classList.contains('collapsed'));
+  });
+}
+
+function setSidebarCollapsed(collapsed) {
+  elements.sidebar.classList.toggle('collapsed', collapsed);
+  elements.sidebarToggle.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0');
+}
+
+// Theme (persists across app restarts). Defaults to the system's light/dark
+// preference until you explicitly pick one.
+function initTheme() {
+  const stored = localStorage.getItem('theme');
+  const theme = stored || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  setTheme(theme);
+  elements.themeToggleBtn.addEventListener('click', () => {
+    setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+  });
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  elements.themeToggleBtn.title = theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme';
+  elements.themeToggleBtn.setAttribute('aria-label', elements.themeToggleBtn.title);
+  localStorage.setItem('theme', theme);
+}
+
 // Initialize
 async function init() {
   await loadData();
   setupEventListeners();
+  initSidebarCollapse();
+  initTheme();
   render();
   
   // Listen for data updates from main process
@@ -105,6 +157,12 @@ async function loadData() {
 
 // Event Listeners
 function setupEventListeners() {
+  // Header toggle between the compact (Favorites, no sidebar) and expanded
+  // (Library, with sidebar) window modes
+  elements.expandToggle.addEventListener('click', () => {
+    switchView(activeView === 'favorites' ? 'library' : 'favorites');
+  });
+
   // Sidebar navigation
   elements.navItems.forEach(btn => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
@@ -114,7 +172,12 @@ function setupEventListeners() {
   elements.filterBtns.forEach(btn => {
     btn.addEventListener('click', () => setFilter(btn.dataset.filter));
   });
-  
+
+  // Source filters (Claude Code / Codex CLI / Cursor)
+  elements.sourceNavItems.forEach(btn => {
+    btn.addEventListener('click', () => setSourceFilter(btn.dataset.source));
+  });
+
   // Search
   elements.searchInput.addEventListener('input', debounce(render, 100));
   
@@ -143,52 +206,85 @@ function setupEventListeners() {
   });
 }
 
+// View, type filter, and source filter are mutually exclusive - picking one
+// clears the other two. They used to be independent and combinable, which
+// silently produced "count says 3, list shows none" when e.g. a Favorites
+// view and a Source filter that shares no items were both left active.
+function clearNavHighlights() {
+  elements.navItems.forEach(btn => btn.classList.remove('active'));
+  elements.filterBtns.forEach(btn => btn.classList.remove('active'));
+  elements.filterButtons.forEach(btn => btn.classList.remove('active'));
+  elements.sourceNavItems.forEach(btn => btn.classList.remove('active'));
+}
+
 // View switching
 function switchView(view) {
+  clearNavHighlights();
   activeView = view;
-  elements.navItems.forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.view === view);
-  });
-  
-  if (view === 'favorites') {
-    activeFilter = 'Favorites';
-    elements.filterButtons.forEach(btn => btn.classList.remove('active'));
-  } else {
-    activeFilter = 'All';
-    elements.filterButtons[0].classList.add('active');
-  }
-  
+  activeFilter = view === 'favorites' ? 'Favorites' : 'All';
+  activeSource = null;
+
+  elements.navItems.forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
+  if (view !== 'favorites') elements.filterButtons[0].classList.add('active');
+
   selectedId = null;
   render();
 }
 
-// Filter
+// Type filter (Prompts / Design Files / Snippets, from either the sidebar or the top pills)
 function setFilter(filter) {
+  clearNavHighlights();
   activeFilter = filter;
-  elements.filterButtons.forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.filter === filter);
-  });
-  
-  // Update sidebar filter buttons too
-  elements.filterBtns.forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.filter === filter);
-  });
-  
+  activeView = 'library';
+  activeSource = null;
+
+  elements.navItems[0].classList.add('active'); // Library
+  elements.filterButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.filter === filter));
+  elements.filterBtns.forEach(btn => btn.classList.toggle('active', btn.dataset.filter === filter));
+
+  selectedId = null;
+  render();
+}
+
+// Source filter (clicking the active source again clears it, back to the library)
+function setSourceFilter(source) {
+  const next = activeSource === source ? null : source;
+  clearNavHighlights();
+  activeSource = next;
+  activeView = 'library';
+  activeFilter = 'All';
+
+  if (next) {
+    elements.sourceNavItems.forEach(btn => btn.classList.toggle('active', btn.dataset.source === next));
+  } else {
+    elements.navItems[0].classList.add('active'); // Library
+    elements.filterButtons[0].classList.add('active'); // All items
+  }
+
   selectedId = null;
   render();
 }
 
 // Sort cycling
+const LIBRARY_SORT_ORDERS = ['recent', 'alpha', 'type'];
+const LIBRARY_SORT_LABELS = { recent: 'Recently updated', alpha: 'Name (A-Z)', type: 'Type' };
+const FAVORITES_SORT_ORDERS = ['custom', 'recent', 'copied'];
+const FAVORITES_SORT_LABELS = { custom: 'Custom order', recent: 'Most recent', copied: 'Most copied' };
+
 function cycleSort() {
-  const orders = ['recent', 'alpha', 'type'];
-  const idx = orders.indexOf(sortOrder);
-  sortOrder = orders[(idx + 1) % orders.length];
-  
-  const labels = { recent: 'Recently updated', alpha: 'Name (A-Z)', type: 'Type' };
-  const icons = { recent: 'm6 9 6 6 6-6', alpha: 'm6 15 6-6 6 6', type: 'm6 9 6 6 6-6' };
-  
-  elements.sortBtn.innerHTML = `${labels[sortOrder]} <svg width="12" height="12" viewBox="0 0 24 24"><path d="${icons[sortOrder]}"/></svg>`;
+  if (activeView === 'favorites') {
+    const idx = FAVORITES_SORT_ORDERS.indexOf(favoritesSortOrder);
+    favoritesSortOrder = FAVORITES_SORT_ORDERS[(idx + 1) % FAVORITES_SORT_ORDERS.length];
+  } else {
+    const idx = LIBRARY_SORT_ORDERS.indexOf(sortOrder);
+    sortOrder = LIBRARY_SORT_ORDERS[(idx + 1) % LIBRARY_SORT_ORDERS.length];
+  }
   render();
+}
+
+function updateSortButtonLabel() {
+  const label = activeView === 'favorites' ? FAVORITES_SORT_LABELS[favoritesSortOrder] : LIBRARY_SORT_LABELS[sortOrder];
+  elements.sortBtn.innerHTML = `${label} <svg width="12" height="12" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>`;
 }
 
 // Get visible items
@@ -204,7 +300,12 @@ function getVisibleItems() {
   if (activeFilter !== 'All' && activeFilter !== 'Favorites') {
     result = result.filter(x => x.type === activeFilter);
   }
-  
+
+  // Source filter
+  if (activeSource) {
+    result = result.filter(x => x.source === activeSource);
+  }
+
   // Search
   const query = (elements.searchInput.value || '').toLowerCase().trim();
   if (query) {
@@ -214,27 +315,67 @@ function getVisibleItems() {
   }
   
   // Sort
-  switch (sortOrder) {
-    case 'alpha':
-      result.sort((a, b) => a.name.localeCompare(b.name));
-      break;
-    case 'type':
-      result.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
-      break;
-    case 'recent':
-    default:
-      // Already in recent-first order from main process
-      break;
+  if (activeView === 'favorites') {
+    switch (favoritesSortOrder) {
+      case 'recent':
+        result.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        break;
+      case 'copied':
+        result.sort((a, b) => (b.copyCount || 0) - (a.copyCount || 0));
+        break;
+      case 'custom':
+      default:
+        result.sort((a, b) => (a.favoriteOrder ?? 0) - (b.favoriteOrder ?? 0));
+        break;
+    }
+  } else {
+    switch (sortOrder) {
+      case 'alpha':
+        result.sort((a, b) => a.name.localeCompare(b.name));
+        break;
+      case 'type':
+        result.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+        break;
+      case 'recent':
+      default:
+        // Already in recent-first order from main process
+        break;
+    }
   }
-  
+
   return result;
 }
 
 // Render everything
 function render() {
+  applyViewLayout();
   renderCounts();
   renderCards();
   renderDetail();
+}
+
+// Favorites is the minimal, default view: just search + sort + the list, no
+// header copy or type-filter pills. Library keeps the fuller browsing chrome.
+let currentWindowMode = 'compact';
+
+function applyViewLayout() {
+  const minimal = activeView === 'favorites';
+  elements.libraryHeader.style.display = minimal ? 'none' : 'flex';
+  elements.filterPills.style.display = minimal ? 'none' : 'flex';
+  elements.cardsContainer.classList.toggle('compact', minimal);
+  updateSortButtonLabel();
+
+  // The sidebar (and its Library nav button) is fully hidden in compact
+  // mode, so the header's expand-toggle is the only way back to it.
+  elements.sidebar.classList.toggle('hidden', minimal);
+  elements.expandToggle.title = minimal ? 'Show full library' : 'Back to favorites';
+  elements.expandToggle.setAttribute('aria-label', elements.expandToggle.title);
+
+  const mode = minimal ? 'compact' : 'expanded';
+  if (mode !== currentWindowMode) {
+    currentWindowMode = mode;
+    window.keystoneAPI.setWindowMode(mode);
+  }
 }
 
 // Render counts
@@ -244,6 +385,9 @@ function renderCounts() {
   elements.promptCount.textContent = items.filter(x => x.type === 'Prompt').length;
   elements.fileCount.textContent = items.filter(x => x.type === 'File').length;
   elements.snippetCount.textContent = items.filter(x => x.type === 'Snippet').length;
+  elements.claudeSourceCount.textContent = items.filter(x => x.source === 'claude-skill').length;
+  elements.codexSourceCount.textContent = items.filter(x => x.source === 'codex-skill').length;
+  elements.cursorSourceCount.textContent = items.filter(x => x.source === 'cursor-rule').length;
 }
 
 // Render cards
@@ -260,12 +404,36 @@ function renderCards() {
     return;
   }
   
+  const draggableNow = activeView === 'favorites' && favoritesSortOrder === 'custom';
+  const starIcon = (filled) => filled
+    ? '<path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3ZM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16Z"/>'
+    : '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z"/>';
+
   elements.cardsContainer.innerHTML = visible.map(item => `
-    <article class="card ${item.id === selectedId ? 'selected' : ''}" data-id="${item.id}" tabindex="0" role="button" aria-label="${escapeHtml(item.name)}">
+    <article class="card" data-id="${item.id}" tabindex="0" role="button" title="Click to copy" aria-label="Copy ${escapeHtml(item.name)} to clipboard" ${draggableNow ? 'draggable="true"' : ''}>
+      <div class="card-copy-hint">
+        <svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+        Click to copy
+      </div>
       <div class="card-header">
         <div class="card-title">
           ${escapeHtml(item.name)}
           ${item.favorite ? '<span class="star-badge">★</span>' : ''}
+        </div>
+        <div class="card-actions">
+          ${item.source ? `
+          <button class="card-action-btn favorite-toggle" type="button" data-action="add-favorite" title="Add to Favorites" aria-label="Add to Favorites">
+            <svg viewBox="0 0 24 24">${starIcon(false)}</svg>
+          </button>` : `
+          <button class="card-action-btn favorite-toggle ${item.favorite ? 'active' : ''}" type="button" data-action="toggle-favorite" title="${item.favorite ? 'Remove from favorites' : 'Add to favorites'}" aria-label="${item.favorite ? 'Remove from favorites' : 'Add to favorites'}">
+            <svg viewBox="0 0 24 24">${starIcon(item.favorite)}</svg>
+          </button>
+          <button class="card-action-btn" type="button" data-action="edit" title="Edit" aria-label="Edit">
+            <svg viewBox="0 0 24 24"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20ZM14 7l3 3"/></svg>
+          </button>
+          <button class="card-action-btn delete" type="button" data-action="delete" title="Delete" aria-label="Delete">
+            <svg viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>`}
         </div>
         <span class="card-type">${escapeHtml(item.type)}</span>
       </div>
@@ -276,21 +444,123 @@ function renderCards() {
       </div>
     </article>
   `).join('');
-  
-  // Add click/keyboard handlers
+
+  // Click (or Enter/Space) anywhere on the card copies it; Favorite/Edit/Delete
+  // are separate buttons so they don't fight with that default action.
   elements.cardsContainer.querySelectorAll('.card').forEach(card => {
-    card.addEventListener('click', () => selectItem(Number(card.dataset.id)));
+    const id = Number(card.dataset.id);
+    const copyHint = card.querySelector('.card-copy-hint');
+    const copyThisCard = () => {
+      const item = items.find(x => x.id === id);
+      if (item) copyContent(item.content, copyHint, id);
+    };
+
+    card.addEventListener('click', copyThisCard);
     card.addEventListener('keydown', (e) => {
+      if (e.target !== card) return; // ignore bubbled keydown from action buttons
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        selectItem(Number(card.dataset.id));
+        copyThisCard();
       }
     });
+
+    card.querySelector('[data-action="toggle-favorite"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFavorite(id);
+    });
+    card.querySelector('[data-action="add-favorite"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      addSyncedToFavorites(id);
+    });
+    card.querySelector('[data-action="edit"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openModal(id);
+    });
+    card.querySelector('[data-action="delete"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteItem(id);
+    });
+
+    if (draggableNow) {
+      card.addEventListener('dragstart', (e) => {
+        draggedId = id;
+        e.dataTransfer.effectAllowed = 'move';
+        card.classList.add('dragging');
+        // Suspends the hover-hide watcher - unreliable cursor tracking during
+        // a native drag could otherwise hide the popover mid-drag and drop
+        // the reorder before it's saved.
+        window.keystoneAPI.setDragging(true);
+      });
+      card.addEventListener('dragend', () => {
+        card.classList.remove('dragging');
+        draggedId = null;
+        window.keystoneAPI.setDragging(false);
+      });
+      card.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        if (draggedId !== null && draggedId !== id) card.classList.add('drag-over');
+      });
+      card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+      card.addEventListener('drop', (e) => {
+        e.preventDefault();
+        card.classList.remove('drag-over');
+        if (draggedId !== null && draggedId !== id) reorderFavoriteCards(draggedId, id);
+      });
+    }
   });
-  
-  // Auto-select first if current selection not visible
-  if (visible.length && !visible.some(x => x.id === selectedId)) {
-    selectedId = visible[0].id;
+
+  // Deselect if the current selection has been filtered out of view
+  if (selectedId !== null && !visible.some(x => x.id === selectedId)) {
+    selectedId = null;
+  }
+}
+
+// Drag-and-drop reordering within the Favorites view's custom sort order
+function reorderFavoriteCards(draggedItemId, targetItemId) {
+  const favorites = getVisibleItems();
+  const draggedIdx = favorites.findIndex(i => i.id === draggedItemId);
+  const targetIdx = favorites.findIndex(i => i.id === targetItemId);
+  if (draggedIdx === -1 || targetIdx === -1) return;
+
+  const reordered = [...favorites];
+  const [dragged] = reordered.splice(draggedIdx, 1);
+  reordered.splice(targetIdx, 0, dragged);
+
+  const orderedIds = reordered.map(i => i.id);
+  orderedIds.forEach((id, index) => {
+    const item = items.find(i => i.id === id);
+    if (item) item.favoriteOrder = index;
+  });
+
+  // Deferred, not called synchronously here: render() replaces the whole
+  // cards container's innerHTML, which would destroy the dragged element
+  // while the browser's own native drag sequence (drop -> dragend) is still
+  // in progress, and can make the drop silently fail to stick.
+  setTimeout(render, 0);
+
+  window.keystoneAPI.reorderFavorites(orderedIds).catch(err => console.error('Reorder failed:', err));
+}
+
+// Clones a synced (read-only) skill into your own library as a favorite,
+// since the synced entry itself is ephemeral and re-scanned from disk.
+async function addSyncedToFavorites(id) {
+  const item = items.find(x => x.id === id);
+  if (!item) return;
+
+  try {
+    await window.keystoneAPI.saveItem({
+      name: item.name,
+      type: item.type,
+      description: item.description,
+      tags: item.tags,
+      tone: item.tone,
+      content: item.content,
+      favorite: true
+    });
+    showToast('Added to Favorites');
+  } catch (err) {
+    console.error('Add to favorites failed:', err);
+    showToast('Failed to add to favorites');
   }
 }
 
@@ -301,16 +571,24 @@ function selectItem(id) {
   renderDetail();
 }
 
+// Deselect, collapsing the detail panel back to the full-width library list
+function closeDetail() {
+  selectedId = null;
+  renderCards();
+  renderDetail();
+}
+
 // Render detail view
 function renderDetail() {
   const item = items.find(x => x.id === selectedId);
-  
+  elements.detailView.classList.toggle('collapsed', !item);
+
   if (!item) {
     elements.detailEmpty.style.display = 'flex';
     elements.detailContent.style.display = 'none';
     return;
   }
-  
+
   elements.detailEmpty.style.display = 'none';
   elements.detailContent.style.display = 'flex';
   elements.detailContent.innerHTML = `
@@ -319,10 +597,21 @@ function renderDetail() {
         <div class="large-icon">${getTypeIcon(item.type)}</div>
         <div>
           <h2>${escapeHtml(item.name)} ${item.favorite ? '<span class="star-badge">★</span>' : ''}</h2>
-          <div class="detail-sub">${escapeHtml(item.type)} · Updated ${escapeHtml(item.updated || '')}</div>
+          <div class="detail-sub">
+            ${item.source
+              ? `<span class="synced-badge" title="Synced from ${escapeHtml(item.sourceLabel)} — edit the source file to update it here">
+                   <svg width="11" height="11" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3"/><path d="M17 4v3.5h-3.5M7 20v-3.5h3.5"/></svg>
+                   Synced from ${escapeHtml(item.sourceLabel)}
+                 </span>`
+              : `${escapeHtml(item.type)} · Updated ${escapeHtml(item.updated || '')}`}
+          </div>
         </div>
       </div>
       <div class="detail-tools">
+        <button class="tool-btn icon-only" onclick="closeDetail()" aria-label="Back to library" title="Back to library">
+          <svg width="14" height="14" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+        ${item.source ? '' : `
         <button class="tool-btn icon-only favorite-btn ${item.favorite ? 'active' : ''}" onclick="toggleFavorite()" aria-label="${item.favorite ? 'Remove from favorites' : 'Add to favorites'}" title="${item.favorite ? 'Remove from favorites' : 'Add to favorites'}">
           <svg width="16" height="16" viewBox="0 0 24 24">${item.favorite ? '<path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3ZM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16Z"/>' : '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z"/>'}</svg>
         </button>
@@ -332,7 +621,7 @@ function renderDetail() {
         </button>
         <button class="tool-btn delete-btn" onclick="deleteItem(${item.id})" title="Delete">
           <svg width="14" height="14" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-        </button>
+        </button>`}
       </div>
     </div>
     
@@ -344,7 +633,7 @@ function renderDetail() {
     <div class="detail-section">
       <div class="section-header">
         <span>${item.type === 'File' ? 'Notes' : 'Content'}</span>
-        <button class="copy-btn" onclick="copyContent('${escapeHtml(item.content).replace(/'/g, "&#39;")}')">
+        <button class="copy-btn" onclick="copyContent('${escapeHtml(item.content).replace(/'/g, "&#39;")}', this, ${item.id})">
           Copy to clipboard <svg width="12" height="12" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
         </button>
       </div>
@@ -469,31 +758,33 @@ async function deleteItem(id) {
   }
 }
 
-async function toggleFavorite() {
-  if (!selectedId) return;
-  
+async function toggleFavorite(id = selectedId) {
+  if (!id) return;
+
   try {
-    await window.keystoneAPI.toggleFavorite(selectedId);
+    await window.keystoneAPI.toggleFavorite(id);
     render();
   } catch (err) {
     console.error('Toggle favorite failed:', err);
   }
 }
 
-async function copyContent(text) {
+async function copyContent(text, btn, id) {
   try {
-    await window.keystoneAPI.copyToClipboard(text);
+    await window.keystoneAPI.copyToClipboard(text, id);
     showToast('Copied to clipboard');
-    
-    // Visual feedback on copy button
-    const btn = document.querySelector('.copy-btn');
+
+    // Visual feedback on whichever element triggered the copy (detail panel's
+    // "Copy to clipboard" button, or a card's hover overlay)
     if (btn) {
+      const original = btn.innerHTML;
+      const checkmark = '<svg width="12" height="12" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>';
       btn.classList.add('copied');
-      btn.innerHTML = 'Copied! <svg width="12" height="12" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>';
+      btn.innerHTML = `Copied! ${checkmark}`;
       setTimeout(() => {
         btn.classList.remove('copied');
-        btn.innerHTML = 'Copy to clipboard <svg width="12" height="12" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
-      }, 1500);
+        btn.innerHTML = original;
+      }, 500);
     }
   } catch (err) {
     console.error('Copy failed:', err);
@@ -553,6 +844,18 @@ function showToast(msg) {
   elements.toast.classList.add('show');
   setTimeout(() => elements.toast.classList.remove('show'), 1800);
 }
+
+// The HTML uses inline onclick="..." attributes (both static, e.g. Cancel,
+// and in templates built by renderDetail). Since this script loads as a
+// module, its functions are scoped to the module and invisible to those
+// inline handlers unless explicitly attached to window.
+window.closeModal = closeModal;
+window.openModal = openModal;
+window.deleteItem = deleteItem;
+window.toggleFavorite = toggleFavorite;
+window.copyContent = copyContent;
+window.showToast = showToast;
+window.closeDetail = closeDetail;
 
 // Initialize
 init();

@@ -13,15 +13,18 @@ contextBridge.exposeInMainWorld('keystoneAPI', {
   saveItem: (item) => ipcRenderer.invoke('save-item', item),
   deleteItem: (id) => ipcRenderer.invoke('delete-item', id),
   toggleFavorite: (id) => ipcRenderer.invoke('toggle-favorite', id),
-  
+  reorderFavorites: (orderedIds) => ipcRenderer.invoke('reorder-favorites', orderedIds),
+
   // Clipboard
-  copyToClipboard: (text) => ipcRenderer.invoke('copy-to-clipboard', text),
+  copyToClipboard: (text, id) => ipcRenderer.invoke('copy-to-clipboard', text, id),
   
   // Settings
   updateSettings: (settings) => ipcRenderer.invoke('update-settings', settings),
   
   // Window control
   hideWindow: () => ipcRenderer.invoke('hide-window'),
+  setWindowMode: (mode) => ipcRenderer.invoke('set-window-mode', mode),
+  setDragging: (dragging) => ipcRenderer.invoke('set-dragging', dragging),
   
   // Event listeners
   onDataUpdated: (callback) => {
